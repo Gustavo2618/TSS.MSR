@@ -45,6 +45,20 @@ Samples::Samples()
     // in its (limited) internal memory. Try to clean up and recover the TPM.
     RecoverTpm();
 
+    if (UseSimulator)
+    {
+        vector<UINT32> standardPcr(24);
+        iota(standardPcr.begin(), standardPcr.end(), 0);
+        auto allocation = tpm.PCR_Allocate(TPM_RH::PLATFORM,
+            {{TPM_ALG_ID::SHA1, standardPcr}, {TPM_ALG_ID::SHA256, standardPcr}});
+        if (!allocation.allocationSuccess)
+            throw runtime_error("Failed to allocate simulator PCR banks.");
+
+        tpm.Shutdown(TPM_SU::CLEAR);
+        device->PowerCycle();
+        tpm.Startup(TPM_SU::CLEAR);
+    }
+
     // Install callbacks to collect command execution statistics.
     StartCallbacks();
 
@@ -980,6 +994,7 @@ void Samples::NV()
 
     // Can change the authVal
     ByteVec newAuth { 3, 1, 4, 1 };
+    TPM_HANDLE oldAuthNvHandle = nvHandle;
     tpm(s).NV_ChangeAuth(nvHandle, newAuth);
     tpm.FlushContext(s);
 
@@ -988,10 +1003,9 @@ void Samples::NV()
 
     // Can no longer read with old password
     tpm._ExpectError(TPM_RC::AUTH_FAIL)
-       .NV_Read(nvHandle, nvHandle, 16, 0);
+       .NV_Read(oldAuthNvHandle, oldAuthNvHandle, 16, 0);
 
-    // But can read with the new one
-    // nvHandle.SetAuth(newAuth);
+    // The original handle now uses the new authorization value.
     tpm.NV_Read(nvHandle, nvHandle, 16, 0);
 
     // And then delete it
