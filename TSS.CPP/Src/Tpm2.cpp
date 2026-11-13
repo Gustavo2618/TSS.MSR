@@ -632,6 +632,16 @@ void Tpm2::CompleteUpdateRequestHandles(TPM_CC cc)
     }
 } // Tpm2::CompleteUpdateRequestHandles
 
+void Tpm2::NV_ChangeAuth(TPM_HANDLE& nvIndex, const ByteVec& newAuth)
+{
+    TPM2_NV_ChangeAuth_REQUEST req(nvIndex, newAuth);
+    Dispatch(TPM_CC::NV_ChangeAuth, req);
+    if(_LastCommandSucceeded())
+    {
+        nvIndex.SetAuth(newAuth);
+    }
+} // Tpm2::NV_ChangeAuth
+
 void Tpm2::UpdateRespHandle(TPM_CC cc, RespStructure& resp)
 {
     // This function is called if a command succeeds. We apply the name and

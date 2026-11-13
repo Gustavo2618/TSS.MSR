@@ -342,6 +342,8 @@ public:
                                   TPMA_SESSION sessAttributes, const TPMT_SYM_DEF& symDef,
                                   const ByteVec& salt, const ByteVec& encryptedSalt);
 
+    /// <summary> This command changes the authorization value for an NV index. </summary>
+    void NV_ChangeAuth(TPM_HANDLE& nvIndex, const ByteVec& newAuth);
 // <<AUTOGEN_BEGIN>>
 // ------------------------------------------------------------------------------------------------
 // DO NOT REMOVE the <<AUTOGEN_BEGIN>> comment!

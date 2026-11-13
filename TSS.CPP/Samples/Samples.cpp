@@ -983,16 +983,15 @@ void Samples::NV()
     tpm(s).NV_ChangeAuth(nvHandle, newAuth);
     tpm.FlushContext(s);
 
-    // TODO: Does not work now
     // TSS.C++ tracks changes of auth-values and updates the relevant handle.
-    //_ASSERT_EXPR(nvHandle.GetAuth() == newAuth, L"Auth value stored in NV handlewas was not updated");
+    _ASSERT_EXPR(nvHandle.GetAuth() == newAuth, L"Auth value stored in NV handle was not updated");
 
     // Can no longer read with old password
     tpm._ExpectError(TPM_RC::AUTH_FAIL)
        .NV_Read(nvHandle, nvHandle, 16, 0);
 
     // But can read with the new one
-    nvHandle.SetAuth(newAuth);
+    // nvHandle.SetAuth(newAuth);
     tpm.NV_Read(nvHandle, nvHandle, 16, 0);
 
     // And then delete it
