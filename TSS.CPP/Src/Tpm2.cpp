@@ -632,6 +632,117 @@ void Tpm2::CompleteUpdateRequestHandles(TPM_CC cc)
     }
 } // Tpm2::CompleteUpdateRequestHandles
 
+
+void Tpm2::AsyncMethods::ClearPendingNvChangeAuth(){
+    pendingNvChangeAuthMode = NvChangeAuthMode::None;
+    pendingNvChangeAuthHandle = nullptr;
+    pendingNvChangeAuthHandleValue = 0;
+    pendingNvChangeAuthValue.clear();
+}
+
+void Tpm2::AsyncMethods::CompleteNvChangeAuth(TPM_HANDLE* handleToUpdate)
+{
+    if(pendingNvChangeAuthMode == NvChangeAuthMode::None)
+    {
+        throw std::runtime_error("No Nv_ChangeAuth command is pending.");
+    }
+
+    TPM_HANDLE* target =nullptr;
+
+    if(pendingNvChangeAuthMode == NvChangeAuthMode::UpdateAtStart)
+    {
+        if(handleToUpdate != nullptr)
+        {
+            throw std::runtime_error("Use NV_ChangeAuthComplete() without a handle.");
+        }
+
+        target = pendingNvChangeAuthHandle;
+    }else
+    {
+        if(handleToUpdate == nullptr)
+        {
+            throw std::runtime_error("Use NV_ChangeAuthComplete() with a handle.");
+        }
+        target = handleToUpdate;
+    }
+
+    if(target == nullptr || target->handle != pendingNvChangeAuthHandleValue)
+    {
+        throw std::runtime_error("Invalid handle for NV_ChangeAuth completion.");
+    }
+
+    try{
+        while(!theTpm.DispatchIn(TPM_CC::NV_ChangeAuth))
+        {
+            TPM2_NV_ChangeAuth_REQUEST req(theTpm.InHandles[0], pendingNvChangeAuthValue);
+            Sleep(1000);
+
+            if(!theTpm.DispatchOut(TPM_CC::NV_ChangeAuth, req))
+            {
+                throw std::runtime_error("NV_ChangeAuth retry was not sent.");
+            }
+        }
+
+        if(theTpm._LastCommandSucceeded())
+        {
+            target->SetAuth(pendingNvChangeAuthValue);
+        }
+    }catch(...)
+    {
+        theTpm.ClearInvocationState();
+        theTpm.Sessions.clear();
+        ClearPendingNvChangeAuth();
+        throw;
+
+    }
+
+    ClearPendingNvChangeAuth();
+}
+
+void Tpm2::AsyncMethods::NV_ChangeAuthComplete(TPM_HANDLE& nvIndex)
+{
+    CompleteNvChangeAuth(&nvIndex);
+}
+
+void Tpm2::AsyncMethods::BeginNvChangeAuth(
+    const TPM_HANDLE& nvIndex,
+    const ByteVec& newAuth,
+    NvChangeAuthMode mode,
+    TPM_HANDLE* handleToUpdate)
+
+{
+    if(pendingNvChangeAuthMode!= NvChangeAuthMode::None)
+    {
+        throw std::runtime_error("An Nv_ChangeAuth command is already pending.");
+    }
+
+    if(mode == NvChangeAuthMode::None ||((mode == NvChangeAuthMode::UpdateAtStart) !=(handleToUpdate != nullptr)))
+    {
+        throw std::runtime_error("Invalid Nv_ChangeAuth update mode.");
+    }
+
+    ByteVec authValue = newAuth;
+    TPM2_NV_ChangeAuth_REQUEST req(nvIndex, authValue);
+
+    if(!theTpm.DispatchOut(TPM_CC::NV_ChangeAuth, req))
+    {
+        return;
+    }
+
+    pendingNvChangeAuthMode = mode;
+    pendingNvChangeAuthHandle = handleToUpdate;
+    pendingNvChangeAuthHandleValue = nvIndex.handle;
+    pendingNvChangeAuthValue.swap(authValue);
+
+}
+
+void Tpm2::AsyncMethods::NV_ChangeAuth(
+    TPM_HANDLE& nvIndex,
+    const ByteVec& newAuth)
+{
+   BeginNvChangeAuth(nvIndex, newAuth, NvChangeAuthMode::UpdateAtStart, &nvIndex);
+}
+
 void Tpm2::NV_ChangeAuth(TPM_HANDLE& nvIndex, const ByteVec& newAuth)
 {
     TPM2_NV_ChangeAuth_REQUEST req(nvIndex, newAuth);

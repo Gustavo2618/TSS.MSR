@@ -11,6 +11,48 @@ using namespace std;
 
 static const TPMT_SYM_DEF_OBJECT Aes128Cfb {TPM_ALG_ID::AES, 128, TPM_ALG_ID::CFB};
 
+namespace
+{
+class NvAuthTestDevice : public TpmDevice
+{
+    unsigned responses = 0;
+    bool failFirst;
+    ByteVec firstCommand;
+
+public:
+    unsigned dispatches = 0;
+    bool sameCommand = true;
+
+    explicit NvAuthTestDevice(bool fail = false) : failFirst(fail) {}
+    bool Connect() override { return true; }
+    void Close() override {}
+    void DispatchCommand(const ByteVec& command) override
+    {
+        if (dispatches == 0)
+            firstCommand = command;
+        else
+            sameCommand = sameCommand && command == firstCommand;
+        ++dispatches;
+    }
+    bool ResponseIsReady() const override { return responses < dispatches; }
+
+    ByteVec GetResponse() override
+    {
+        if (!ResponseIsReady())
+            throw runtime_error("No retry test response is pending.");
+        if (responses++ == 0)
+        {
+            // TPM error responses contain only the ten-byte header.
+            if (failFirst)
+                return { 0x80, 0x01, 0, 0, 0, 10, 0, 0, 0, 0x8e };
+            return { 0x80, 0x01, 0, 0, 0, 10, 0, 0, 0x09, 0x22 };
+        }
+        return { 0x80, 0x02, 0, 0, 0, 19, 0, 0, 0, 0,
+                 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    }
+};
+}
+
 // Verify that the sample did not leave any dangling handles in the TPM.
 #define _check AssertNoLoadedKeys()
 
@@ -1007,6 +1049,96 @@ void Samples::NV()
 
     // The original handle now uses the new authorization value.
     tpm.NV_Read(nvHandle, nvHandle, 16, 0);
+
+    // Change the NV authorization asynchronously using a mutable handle.
+    ByteVec asyncAuth { 2, 7, 1, 8 };
+    TPM_HANDLE previousAuthHandle = nvHandle;
+
+    AUTH_SESSION asyncSession = tpm.StartAuthSession(TPM_SE::POLICY, TPM_ALG_ID::SHA1);
+    p3.Execute(tpm, asyncSession);
+
+    tpm(asyncSession).Async.NV_ChangeAuth(nvHandle, asyncAuth);
+    _ASSERT_EXPR(nvHandle.GetAuth() == newAuth,
+                 L"NV handle changed before async completion");
+
+    tpm.Async.NV_ChangeAuthComplete();
+    tpm.FlushContext(asyncSession);
+
+    _ASSERT_EXPR(nvHandle.GetAuth() == asyncAuth,
+                 L"NV handle was not updated after async completion");
+
+    tpm._ExpectError(TPM_RC::AUTH_FAIL)
+       .NV_Read(previousAuthHandle, previousAuthHandle, 16, 0);
+    tpm.NV_Read(nvHandle, nvHandle, 16, 0);
+
+    // Supply the mutable handle at completion when the initial handle is const.
+    ByteVec completionAuth { 1, 6, 1, 8 };
+    TPM_HANDLE previousCompletionHandle = nvHandle;
+    const TPM_HANDLE& readOnlyHandle = nvHandle;
+    AUTH_SESSION completionSession = tpm.StartAuthSession(TPM_SE::POLICY, TPM_ALG_ID::SHA1);
+    p3.Execute(tpm, completionSession);
+
+    tpm(completionSession).Async.NV_ChangeAuth(readOnlyHandle, completionAuth);
+    _ASSERT_EXPR(nvHandle.GetAuth() == asyncAuth,
+                 L"NV handle changed before async completion");
+
+    bool wrongCompletionRejected = false;
+    try
+    {
+        tpm.Async.NV_ChangeAuthComplete();
+    }
+    catch (const runtime_error&)
+    {
+        wrongCompletionRejected = true;
+    }
+    _ASSERT_EXPR(wrongCompletionRejected, L"Wrong async completion was not rejected");
+
+    TPM_HANDLE wrongIndex = nvHandle;
+    wrongIndex.handle ^= 1;
+    bool wrongHandleRejected = false;
+    try
+    {
+        tpm.Async.NV_ChangeAuthComplete(wrongIndex);
+    }
+    catch (const runtime_error&)
+    {
+        wrongHandleRejected = true;
+    }
+    _ASSERT_EXPR(wrongHandleRejected, L"Wrong NV handle was not rejected");
+
+    tpm.Async.NV_ChangeAuthComplete(nvHandle);
+    tpm.FlushContext(completionSession);
+    _ASSERT_EXPR(nvHandle.GetAuth() == completionAuth,
+                 L"NV handle supplied at completion was not updated");
+
+    tpm._ExpectError(TPM_RC::AUTH_FAIL)
+       .NV_Read(previousCompletionHandle, previousCompletionHandle, 16, 0);
+    tpm.NV_Read(nvHandle, nvHandle, 16, 0);
+
+    // Force one retry without sending a command to a TPM.
+    NvAuthTestDevice retryDevice;
+    Tpm2 retryTpm(retryDevice);
+    TPM_HANDLE retryHandle = TPM_HANDLE::NV(1);
+    ByteVec retryAuth { 4, 2 };
+    retryTpm.Async.NV_ChangeAuth(retryHandle, retryAuth);
+    retryTpm.Async.NV_ChangeAuthComplete();
+    _ASSERT_EXPR(retryDevice.dispatches == 2, L"NV_ChangeAuth was not retried");
+    _ASSERT_EXPR(retryDevice.sameCommand, L"Retry changed the NV_ChangeAuth command");
+    _ASSERT_EXPR(retryHandle.GetAuth() == retryAuth, L"Retry did not update the NV handle");
+
+    NvAuthTestDevice errorDevice(true);
+    Tpm2 errorTpm(errorDevice);
+    TPM_HANDLE errorHandle = TPM_HANDLE::NV(2);
+    ByteVec originalAuth { 7 };
+    errorHandle.SetAuth(originalAuth);
+    errorTpm._AllowErrors().Async.NV_ChangeAuth(errorHandle, retryAuth);
+    errorTpm.Async.NV_ChangeAuthComplete();
+    _ASSERT_EXPR(!errorTpm._LastCommandSucceeded(), L"NV_ChangeAuth failure was not reported");
+    _ASSERT_EXPR(errorHandle.GetAuth() == originalAuth, L"Failed command changed the NV handle");
+
+    errorTpm.Async.NV_ChangeAuth(errorHandle, retryAuth);
+    errorTpm.Async.NV_ChangeAuthComplete();
+    _ASSERT_EXPR(errorHandle.GetAuth() == retryAuth, L"Failed command left pending state");
 
     // And then delete it
     tpm.NV_UndefineSpace(TPM_RH::OWNER, nvHandle);

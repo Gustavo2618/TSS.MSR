@@ -2269,6 +2269,29 @@ public:
     class _DLLEXP_ AsyncMethods
     {
     protected: Tpm2& theTpm;
+
+    enum class NvChangeAuthMode
+    {
+        None,
+        UpdateAtStart,
+        UpdateAtComplete
+    };
+
+    NvChangeAuthMode pendingNvChangeAuthMode = NvChangeAuthMode::None;
+    TPM_HANDLE* pendingNvChangeAuthHandle = nullptr;
+    UINT32 pendingNvChangeAuthHandleValue = 0;
+    ByteVec pendingNvChangeAuthValue;
+
+    void BeginNvChangeAuth(
+        const TPM_HANDLE& nvIndex,
+        const ByteVec& newAuth,
+        NvChangeAuthMode mode,
+        TPM_HANDLE* handleToUpdate);
+
+    void CompleteNvChangeAuth(TPM_HANDLE* handleToUpdate);
+    void ClearPendingNvChangeAuth();
+
+
     public: AsyncMethods(Tpm2& _tpm) : theTpm(_tpm) {}
     public:
         /// <summary> TPM2_Startup() is always preceded by _TPM_Init, which is the physical indication
@@ -4070,14 +4093,28 @@ public:
             const TPM_HANDLE& nvIndex
         );
 
-        /// <summary> This command allows the authorization secret for an NV Index to be changed. </summary>
+        /// <summary> Starts an asynchronous command to change the authorization secret for an NV Index. </summary>
         /// <param name = "nvIndex"> Handle of the entity
         ///        Auth Index: 1
         ///        Auth Role: ADMIN </param>
         /// <param name = "newAuth"> New authorization value </param>
+        /// <remarks> Complete this form with NV_ChangeAuthComplete(TPM_HANDLE&) to update a mutable
+        ///           handle. </remarks>
         void NV_ChangeAuth
         (
             const TPM_HANDLE& nvIndex, 
+            const ByteVec& newAuth
+        );
+        /// <summary> Starts an asynchronous command to change the authorization secret for an NV Index. </summary>
+        /// <param name = "nvIndex"> Mutable handle of the entity
+        ///        Auth Index: 1
+        ///        Auth Role: ADMIN </param>
+        /// <param name = "newAuth"> New authorization value </param>
+        /// <remarks> The handle is updated after NV_ChangeAuthComplete() succeeds and must remain
+        ///           alive until then. </remarks>
+        void NV_ChangeAuth
+        (
+            TPM_HANDLE& nvIndex,
             const ByteVec& newAuth
         );
 
@@ -4874,8 +4911,13 @@ public:
         /// prevent further reads of the NV Index until the next TPM2_Startup (TPM_SU_CLEAR). </summary>
         void NV_ReadLockComplete();
 
-        /// <summary> This command allows the authorization secret for an NV Index to be changed. </summary>
+        /// <summary> Completes an asynchronous NV_ChangeAuth started with a mutable handle. </summary>
         void NV_ChangeAuthComplete();
+
+        /// <summary> Completes an asynchronous NV_ChangeAuth started with a const handle. </summary>
+        /// <param name = "nvIndex"> Mutable handle for the same NV Index; its authorization value is
+        ///        updated on success. </param>
+        void NV_ChangeAuthComplete(TPM_HANDLE& nvIndex);
 
         /// <summary> The purpose of this command is to certify the contents of an NV Index or portion
         /// of an NV Index. </summary>

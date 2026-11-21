@@ -8906,13 +8906,11 @@ void Tpm2::AsyncMethods::NV_ReadLock(
     TPM2_NV_ReadLock_REQUEST req(authHandle, nvIndex);
     theTpm.DispatchOut(TPM_CC::NV_ReadLock, req);
 }
-
 void Tpm2::AsyncMethods::NV_ChangeAuth(
     const TPM_HANDLE& nvIndex, 
     const ByteVec& newAuth)
 {
-    TPM2_NV_ChangeAuth_REQUEST req(nvIndex, newAuth);
-    theTpm.DispatchOut(TPM_CC::NV_ChangeAuth, req);
+   BeginNvChangeAuth(nvIndex, newAuth, NvChangeAuthMode::UpdateAtComplete, nullptr);
 }
 
 void Tpm2::AsyncMethods::NV_Certify(
@@ -9669,7 +9667,7 @@ void Tpm2::AsyncMethods::NV_ReadLockComplete()
 
 void Tpm2::AsyncMethods::NV_ChangeAuthComplete()
 {
-    theTpm.DispatchIn(TPM_CC::NV_ChangeAuth);
+    CompleteNvChangeAuth(nullptr);
 }
 
 NV_CertifyResponse Tpm2::AsyncMethods::NV_CertifyComplete()
