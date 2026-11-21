@@ -1037,11 +1037,13 @@ void Samples::NV()
     // Can change the authVal
     ByteVec newAuth { 3, 1, 4, 1 };
     TPM_HANDLE oldAuthNvHandle = nvHandle;
+    cout << "[NV_ChangeAuth] Synchronous: changing NV authorization..." << endl;
     tpm(s).NV_ChangeAuth(nvHandle, newAuth);
     tpm.FlushContext(s);
 
     // TSS.C++ tracks changes of auth-values and updates the relevant handle.
     _ASSERT_EXPR(nvHandle.GetAuth() == newAuth, L"Auth value stored in NV handle was not updated");
+    cout << "[NV_ChangeAuth] Synchronous: authorization updated successfully." << endl;
 
     // Can no longer read with old password
     tpm._ExpectError(TPM_RC::AUTH_FAIL)
@@ -1049,6 +1051,7 @@ void Samples::NV()
 
     // The original handle now uses the new authorization value.
     tpm.NV_Read(nvHandle, nvHandle, 16, 0);
+    cout << "[NV_ChangeAuth] Synchronous: old authorization rejected; new authorization accepted." << endl;
 
     // Change the NV authorization asynchronously using a mutable handle.
     ByteVec asyncAuth { 2, 7, 1, 8 };
@@ -1057,19 +1060,23 @@ void Samples::NV()
     AUTH_SESSION asyncSession = tpm.StartAuthSession(TPM_SE::POLICY, TPM_ALG_ID::SHA1);
     p3.Execute(tpm, asyncSession);
 
+    cout << "[NV_ChangeAuth] Async mutable handle: dispatching command..." << endl;
     tpm(asyncSession).Async.NV_ChangeAuth(nvHandle, asyncAuth);
     _ASSERT_EXPR(nvHandle.GetAuth() == newAuth,
                  L"NV handle changed before async completion");
+    cout << "[NV_ChangeAuth] Async mutable handle: command sent; handle is unchanged before completion." << endl;
 
     tpm.Async.NV_ChangeAuthComplete();
     tpm.FlushContext(asyncSession);
 
     _ASSERT_EXPR(nvHandle.GetAuth() == asyncAuth,
                  L"NV handle was not updated after async completion");
+    cout << "[NV_ChangeAuth] Async mutable handle: completion succeeded; handle updated." << endl;
 
     tpm._ExpectError(TPM_RC::AUTH_FAIL)
        .NV_Read(previousAuthHandle, previousAuthHandle, 16, 0);
     tpm.NV_Read(nvHandle, nvHandle, 16, 0);
+    cout << "[NV_ChangeAuth] Async mutable handle: old authorization rejected; new authorization accepted." << endl;
 
     // Supply the mutable handle at completion when the initial handle is const.
     ByteVec completionAuth { 1, 6, 1, 8 };
@@ -1078,9 +1085,11 @@ void Samples::NV()
     AUTH_SESSION completionSession = tpm.StartAuthSession(TPM_SE::POLICY, TPM_ALG_ID::SHA1);
     p3.Execute(tpm, completionSession);
 
+    cout << "[NV_ChangeAuth] Async const handle: dispatching command..." << endl;
     tpm(completionSession).Async.NV_ChangeAuth(readOnlyHandle, completionAuth);
     _ASSERT_EXPR(nvHandle.GetAuth() == asyncAuth,
                  L"NV handle changed before async completion");
+    cout << "[NV_ChangeAuth] Async const handle: command sent; handle is unchanged before completion." << endl;
 
     bool wrongCompletionRejected = false;
     try
@@ -1092,6 +1101,7 @@ void Samples::NV()
         wrongCompletionRejected = true;
     }
     _ASSERT_EXPR(wrongCompletionRejected, L"Wrong async completion was not rejected");
+    cout << "[NV_ChangeAuth] Async const handle: completion without a handle was rejected." << endl;
 
     TPM_HANDLE wrongIndex = nvHandle;
     wrongIndex.handle ^= 1;
@@ -1105,17 +1115,21 @@ void Samples::NV()
         wrongHandleRejected = true;
     }
     _ASSERT_EXPR(wrongHandleRejected, L"Wrong NV handle was not rejected");
+    cout << "[NV_ChangeAuth] Async const handle: mismatched NV handle was rejected." << endl;
 
     tpm.Async.NV_ChangeAuthComplete(nvHandle);
     tpm.FlushContext(completionSession);
     _ASSERT_EXPR(nvHandle.GetAuth() == completionAuth,
                  L"NV handle supplied at completion was not updated");
+    cout << "[NV_ChangeAuth] Async const handle: completion succeeded; supplied handle updated." << endl;
 
     tpm._ExpectError(TPM_RC::AUTH_FAIL)
        .NV_Read(previousCompletionHandle, previousCompletionHandle, 16, 0);
     tpm.NV_Read(nvHandle, nvHandle, 16, 0);
+    cout << "[NV_ChangeAuth] Async const handle: old authorization rejected; new authorization accepted." << endl;
 
     // Force one retry without sending a command to a TPM.
+    cout << "[NV_ChangeAuth] RETRY: testing with a fake device (no TPM command sent)..." << endl;
     NvAuthTestDevice retryDevice;
     Tpm2 retryTpm(retryDevice);
     TPM_HANDLE retryHandle = TPM_HANDLE::NV(1);
@@ -1125,7 +1139,9 @@ void Samples::NV()
     _ASSERT_EXPR(retryDevice.dispatches == 2, L"NV_ChangeAuth was not retried");
     _ASSERT_EXPR(retryDevice.sameCommand, L"Retry changed the NV_ChangeAuth command");
     _ASSERT_EXPR(retryHandle.GetAuth() == retryAuth, L"Retry did not update the NV handle");
+    cout << "[NV_ChangeAuth] RETRY: command resent unchanged; handle updated after success." << endl;
 
+    cout << "[NV_ChangeAuth] Error handling: testing with a fake device (no TPM command sent)..." << endl;
     NvAuthTestDevice errorDevice(true);
     Tpm2 errorTpm(errorDevice);
     TPM_HANDLE errorHandle = TPM_HANDLE::NV(2);
@@ -1135,10 +1151,12 @@ void Samples::NV()
     errorTpm.Async.NV_ChangeAuthComplete();
     _ASSERT_EXPR(!errorTpm._LastCommandSucceeded(), L"NV_ChangeAuth failure was not reported");
     _ASSERT_EXPR(errorHandle.GetAuth() == originalAuth, L"Failed command changed the NV handle");
+    cout << "[NV_ChangeAuth] Error handling: failed command reported; handle authorization preserved." << endl;
 
     errorTpm.Async.NV_ChangeAuth(errorHandle, retryAuth);
     errorTpm.Async.NV_ChangeAuthComplete();
     _ASSERT_EXPR(errorHandle.GetAuth() == retryAuth, L"Failed command left pending state");
+    cout << "[NV_ChangeAuth] Error handling: subsequent command succeeded after the failure." << endl;
 
     // And then delete it
     tpm.NV_UndefineSpace(TPM_RH::OWNER, nvHandle);
