@@ -15,15 +15,18 @@ namespace
 {
 class NvAuthTestDevice : public TpmDevice
 {
+public:
+    enum class FirstResponse{Retry, Success, AuthFail};
+private:
     unsigned responses = 0;
-    bool failFirst;
+    FirstResponse firstResponse;
     ByteVec firstCommand;
 
 public:
     unsigned dispatches = 0;
     bool sameCommand = true;
 
-    explicit NvAuthTestDevice(bool fail = false) : failFirst(fail) {}
+    explicit NvAuthTestDevice(FirstResponse first = FirstResponse::Retry) : firstResponse(first) {}
     bool Connect() override { return true; }
     void Close() override {}
     void DispatchCommand(const ByteVec& command) override
@@ -34,6 +37,7 @@ public:
             sameCommand = sameCommand && command == firstCommand;
         ++dispatches;
     }
+
     bool ResponseIsReady() const override { return responses < dispatches; }
 
     ByteVec GetResponse() override
@@ -43,9 +47,15 @@ public:
         if (responses++ == 0)
         {
             // TPM error responses contain only the ten-byte header.
-            if (failFirst)
+            if (firstResponse == FirstResponse::AuthFail)
+            {
                 return { 0x80, 0x01, 0, 0, 0, 10, 0, 0, 0, 0x8e };
-            return { 0x80, 0x01, 0, 0, 0, 10, 0, 0, 0x09, 0x22 };
+            }
+            if (firstResponse == FirstResponse::Retry)
+            {
+                return { 0x80, 0x01, 0, 0, 0, 10, 0, 0, 0x09, 0x22 };
+            }
+           
         }
         return { 0x80, 0x02, 0, 0, 0, 19, 0, 0, 0, 0,
                  0, 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -1142,7 +1152,7 @@ void Samples::NV()
     cout << "[NV_ChangeAuth] RETRY: command resent unchanged; handle updated after success." << endl;
 
     cout << "[NV_ChangeAuth] Error handling: testing with a fake device (no TPM command sent)..." << endl;
-    NvAuthTestDevice errorDevice(true);
+    NvAuthTestDevice errorDevice(NvAuthTestDevice::FirstResponse::AuthFail);
     Tpm2 errorTpm(errorDevice);
     TPM_HANDLE errorHandle = TPM_HANDLE::NV(2);
     ByteVec originalAuth { 7 };
@@ -1157,6 +1167,58 @@ void Samples::NV()
     errorTpm.Async.NV_ChangeAuthComplete();
     _ASSERT_EXPR(errorHandle.GetAuth() == retryAuth, L"Failed command left pending state");
     cout << "[NV_ChangeAuth] Error handling: subsequent command succeeded after the failure." << endl;
+    
+    NvAuthTestDevice successDevice(NvAuthTestDevice::FirstResponse::Success);
+    Tpm2 expectedErrorTpm(successDevice);
+    TPM_HANDLE expectedErrorHandle = TPM_HANDLE::NV(3);
+    ByteVec oldExpectedAuth{9};
+    ByteVec requestAuth{8,6};
+    expectedErrorHandle.SetAuth(oldExpectedAuth);
+    expectedErrorTpm._ExpectError(TPM_RC::AUTH_FAIL).Async.NV_ChangeAuth(expectedErrorHandle, requestAuth);
+    
+    bool expectedErrorThrown = false;
+    try
+    {
+        expectedErrorTpm.Async.NV_ChangeAuthComplete();
+    }catch (const system_error&)
+    {
+        expectedErrorThrown = true;
+    }
+
+    _ASSERT_EXPR(expectedErrorThrown, L"Expected error was not reported");
+    _ASSERT_EXPR(expectedErrorTpm._LastCommandSucceeded(),
+                 L"Fake device did not return success");
+    _ASSERT_EXPR(expectedErrorHandle.GetAuth() == requestAuth,
+                 L"Successful command did not update the NV handle");
+    _ASSERT_EXPR(successDevice.dispatches == 1,
+             L"Unexpected number of commands sent to fake device");
+    
+    NvAuthTestDevice syncSuccessDevice(NvAuthTestDevice::FirstResponse::Success);
+    Tpm2 syncExpectedErrorTpm(syncSuccessDevice);
+    TPM_HANDLE syncExpectedErrorHandle = TPM_HANDLE::NV(4);
+    ByteVec oldSyncAuth { 9 };
+    ByteVec newSyncAuth { 8, 6 };
+    syncExpectedErrorHandle.SetAuth(oldSyncAuth);
+
+    bool syncExpectedErrorThrown = false;
+    try
+    {
+        syncExpectedErrorTpm._ExpectError(TPM_RC::AUTH_FAIL)
+            .NV_ChangeAuth(syncExpectedErrorHandle, newSyncAuth);
+    }
+    catch (const system_error&)
+    {
+        syncExpectedErrorThrown = true;
+    }
+
+    _ASSERT_EXPR(syncExpectedErrorThrown,
+                 L"Expected synchronous error was not reported");
+    _ASSERT_EXPR(syncExpectedErrorTpm._LastCommandSucceeded(),
+                 L"Fake device did not return synchronous success");
+    _ASSERT_EXPR(syncExpectedErrorHandle.GetAuth() == newSyncAuth,
+                 L"Successful synchronous command did not update the NV handle");
+    _ASSERT_EXPR(syncSuccessDevice.dispatches == 1,
+                 L"Unexpected number of synchronous commands sent to fake device");
 
     // And then delete it
     tpm.NV_UndefineSpace(TPM_RH::OWNER, nvHandle);

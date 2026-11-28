@@ -591,8 +591,9 @@ void Tpm2::CompleteUpdateRequestHandles(TPM_CC cc)
         }
 
         case TPM_CC::NV_ChangeAuth: {
-            // TODO: Does not work because we make a value copy of the 
-            //       input handle in the command dispatcher.
+            // Keep the dispatcher-owned handle copy in sync. The synchronous and
+            // asynchronous paths also update the caller's handle when the TPM
+            // reports success, even if _ExpectError then throws.
             InHandles[0].SetAuth(objectInAuth);
             return;
         }
@@ -672,11 +673,29 @@ void Tpm2::AsyncMethods::CompleteNvChangeAuth(TPM_HANDLE* handleToUpdate)
     }
 
     try{
-        while(!theTpm.DispatchIn(TPM_CC::NV_ChangeAuth))
+        while(true)
         {
+            bool responseCompleted = false;
+            try
+            {
+                responseCompleted = theTpm.DispatchIn(TPM_CC::NV_ChangeAuth);
+            }
+
+            catch(const std::system_error& error)
+            {
+                if(error.code().value() ==static_cast<int>(TPM_RC::SUCCESS) && 
+                theTpm._LastCommandSucceeded())
+                {
+                    target->SetAuth(pendingNvChangeAuthValue);
+                }
+                throw;
+            }
+            if(responseCompleted)
+            {
+                break;
+            }
             TPM2_NV_ChangeAuth_REQUEST req(theTpm.InHandles[0], pendingNvChangeAuthValue);
             Sleep(1000);
-
             if(!theTpm.DispatchOut(TPM_CC::NV_ChangeAuth, req))
             {
                 throw std::runtime_error("NV_ChangeAuth retry was not sent.");
@@ -746,7 +765,22 @@ void Tpm2::AsyncMethods::NV_ChangeAuth(
 void Tpm2::NV_ChangeAuth(TPM_HANDLE& nvIndex, const ByteVec& newAuth)
 {
     TPM2_NV_ChangeAuth_REQUEST req(nvIndex, newAuth);
-    Dispatch(TPM_CC::NV_ChangeAuth, req);
+
+    try
+    {
+        Dispatch(TPM_CC::NV_ChangeAuth, req);
+    }
+    catch (const std::system_error& error)
+    {
+        if (error.code().value() == static_cast<int>(TPM_RC::SUCCESS)
+            && _LastCommandSucceeded())
+        {
+            nvIndex.SetAuth(newAuth);
+        }
+
+        throw;
+    }
+
     if(_LastCommandSucceeded())
     {
         nvIndex.SetAuth(newAuth);
