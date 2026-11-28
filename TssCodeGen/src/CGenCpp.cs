@@ -359,12 +359,39 @@ namespace CodeGen
             Write("class _DLLEXP_ AsyncMethods");
             Write("{");
             Write("protected: Tpm2& theTpm;");
+            Write("enum class NvChangeAuthMode { None, UpdateAtStart, UpdateAtComplete };");
+            Write("NvChangeAuthMode pendingNvChangeAuthMode = NvChangeAuthMode::None;");
+            Write("TPM_HANDLE* pendingNvChangeAuthHandle = nullptr;");
+            Write("UINT32 pendingNvChangeAuthHandleValue = 0;");
+            Write("ByteVec pendingNvChangeAuthValue;");
+            Write("void BeginNvChangeAuth(const TPM_HANDLE& nvIndex, const ByteVec& newAuth,");
+            Write("                       NvChangeAuthMode mode, TPM_HANDLE* handleToUpdate);");
+            Write("void CompleteNvChangeAuth(TPM_HANDLE* handleToUpdate);");
+            Write("void ClearPendingNvChangeAuth();");
             Write("public: AsyncMethods(Tpm2& _tpm) : theTpm(_tpm) {}");
             TabIn("public:");
             foreach (TpmStruct s in commands)
+            {
                 GenCommand(s, CommandFlavor.AsyncCommand);
+                if (GetCommandName(s) == "NV_ChangeAuth")
+                {
+                    Write("/// <summary> Starts an asynchronous command to change an NV Index authorization. </summary>");
+                    Write("/// <param name = \"nvIndex\"> Mutable handle that must remain alive until completion. </param>");
+                    Write("/// <param name = \"newAuth\"> New authorization value </param>");
+                    Write("/// <remarks> Complete with NV_ChangeAuthComplete() to update the handle on success. </remarks>");
+                    Write("void NV_ChangeAuth(TPM_HANDLE& nvIndex, const ByteVec& newAuth);");
+                }
+            }
             foreach (TpmStruct s in commands)
+            {
                 GenCommand(s, CommandFlavor.AsyncResponse);
+                if (GetCommandName(s) == "NV_ChangeAuth")
+                {
+                    Write("/// <summary> Completes an asynchronous NV_ChangeAuth started with a const handle. </summary>");
+                    Write("/// <param name = \"nvIndex\"> Mutable handle for the same NV Index; updated on success. </param>");
+                    Write("void NV_ChangeAuthComplete(TPM_HANDLE& nvIndex);");
+                }
+            }
             TabOut("};");
 
             TabOut("public:");
@@ -394,6 +421,10 @@ namespace CodeGen
                 foreach (var f in reqFields)
                     annotation += GetParamComment(f) + eol;
             }
+            if (GetCommandName(req) == "NV_ChangeAuth" && gen == CommandFlavor.AsyncCommand)
+                annotation += "<remarks> Complete with NV_ChangeAuthComplete(TPM_HANDLE&) to update a mutable handle. </remarks>" + eol;
+            else if (GetCommandName(req) == "NV_ChangeAuth" && gen == CommandFlavor.AsyncResponse)
+                annotation += "<remarks> Complete the form started with a mutable handle. </remarks>" + eol;
             WriteComment(annotation + (GetReturnComment(resp.NonTagFields)), false);
 
             string returnType = GetCommandReturnType(gen, resp, cmdName, out string returnFieldName);
@@ -708,6 +739,23 @@ namespace CodeGen
             var resp = GetRespStruct(req);
             string cmdName = GetCommandName(req);
             string cmdCode = "TPM_CC::" + cmdName;
+
+            if (cmdName == "NV_ChangeAuth" && gen == CommandFlavor.AsyncCommand)
+            {
+                Write("void Tpm2::AsyncMethods::NV_ChangeAuth(const TPM_HANDLE& nvIndex, const ByteVec& newAuth)");
+                TabIn("{");
+                Write("BeginNvChangeAuth(nvIndex, newAuth, NvChangeAuthMode::UpdateAtComplete, nullptr);");
+                TabOut("}");
+                return;
+            }
+            if (cmdName == "NV_ChangeAuth" && gen == CommandFlavor.AsyncResponse)
+            {
+                Write("void Tpm2::AsyncMethods::NV_ChangeAuthComplete()");
+                TabIn("{");
+                Write("CompleteNvChangeAuth(nullptr);");
+                TabOut("}");
+                return;
+            }
 
             string inStructId = req.Name + "_ID";
             string outStructId = resp.Name + "_ID";
